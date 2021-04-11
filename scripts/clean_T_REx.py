@@ -122,7 +122,7 @@ def func(file):
 if __name__ == "__main__":
     start_time = time.time()
     pool = multiprocessing.Pool(processes=os.cpu_count())
-    data_path = "data/TREx/re-nlg_data" # the path of raw T_Rex dataset
+    data_path = "/hdd1/seokwon/data/TREx/re-nlg_data" # the path of raw T_Rex dataset
     file_list = os.listdir(data_path)
 
     results = []

@@ -235,6 +235,7 @@ def train(args, train_dataset, model, tokenizer):
 
             if args.n_gpu > 1:
                 loss = loss.mean() # mean() to average on multi-gpu parallel training
+
             if args.gradient_accumulation_steps > 1:
                 loss = loss / args.gradient_accumulation_steps
 
@@ -254,7 +255,6 @@ def train(args, train_dataset, model, tokenizer):
 
                 torch.nn.utils.clip_grad_norm_(tacred_model.parameters(), args.max_grad_norm)
 
-
             tr_loss += loss.item()
             if (step + 1) % args.gradient_accumulation_steps == 0:
                 optimizer.step()
@@ -267,8 +267,8 @@ def train(args, train_dataset, model, tokenizer):
 
                 if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.logging_steps == 0:
                     # Log metrics
-                    # if args.local_rank == -1 and args.evaluate_during_training:  # Only evaluate when single GPU otherwise metrics may not average well
-                        # results = evaluate(args, model, tokenizer)
+                    if args.local_rank == -1 and args.evaluate_during_training:  # Only evaluate when single GPU otherwise metrics may not average well
+                        results = evaluate(args, model, tokenizer)
                         # for key, value in results.items():
                         #     tb_writer.add_scalar('eval_{}'.format(key), value, global_step)
                     # tb_writer.add_scalar('lr', scheduler.get_lr()[0], global_step)
@@ -294,18 +294,20 @@ def train(args, train_dataset, model, tokenizer):
 
                     logger.info("Saving model checkpoint, optimizer, global_step to %s", output_dir)
 
-                # if global_step %args.eval_steps== 0:  # Only evaluate when single GPU otherwise metrics may not average well
-                #     model = (pretrained_model, tacred_model)
-                #     results = evaluate(args, model, tokenizer)
-                # if (global_step + 1) % args.save_model_iteration == 0:
-                #     # output_dir = os.path.join(args.output_dir, 'checkpoint-{}'.format(global_step))
-                #     # if not os.path.exists(output_dir):
-                #     #     os.makedirs(output_dir)
-                #     output_dir = args.output_dir
-                #     model_to_save = model.module if hasattr(model,
-                #                                             'module') else model  # Take care of distributed/parallel training
-                #     model_to_save.save_pretrained(output_dir)
-                #     torch.save(args, os.path.join(output_dir, 'pytorch_model_{}.bin'.format(global_step + 1)))
+                if global_step % args.eval_steps == 0:  # Only evaluate when single GPU otherwise metrics may not average well
+                    model = (pretrained_model, tacred_model)
+                    results = evaluate(args, model, tokenizer)
+
+                if args.save_model_iteration:
+                    if (global_step + 1) % args.save_model_iteration == 0:
+                        # output_dir = os.path.join(args.output_dir, 'checkpoint-{}'.format(global_step))
+                        # if not os.path.exists(output_dir):
+                        #     os.makedirs(output_dir)
+                        output_dir = args.output_dir
+                        model_to_save = model.module if hasattr(model,
+                                                                'module') else model  # Take care of distributed/parallel training
+                        model_to_save.save_pretrained(output_dir)
+                        torch.save(args, os.path.join(output_dir, 'pytorch_model_{}.bin'.format(global_step + 1)))
 
             if args.max_steps > 0 and global_step > args.max_steps:
                 # epoch_iterator.close()
@@ -314,18 +316,21 @@ def train(args, train_dataset, model, tokenizer):
         if args.max_steps > 0 and global_step > args.max_steps:
             # train_iterator.close()
             break
+
         model = (pretrained_model,tacred_model)
         results = evaluate(args, model, tokenizer, prefix="")
-        # for key, value in results.items():
-        #     tb_writer.add_scalar('eval_{}'.format(key), value, global_step)
+        for key, value in results.items():
+            print(results)
+            # tb_writer.add_scalar('eval_{}'.format(key), value, global_step)
 
     # if args.local_rank in [-1, 0]:
     #     tb_writer.close()
 
-    return global_step, tr_loss / global_step
+    return global_step, tr_loss / global_step, results
 
 save_results=[]
 def evaluate(args, model, tokenizer, prefix=""):
+    # import pdb; pdb.set_trace()
     pretrained_model = model[0]
     tacred_model = model[1]
     # Loop to handle MNLI double evaluation (matched, mis-matched)
@@ -415,6 +420,7 @@ def evaluate(args, model, tokenizer, prefix=""):
                 for line in save_results:
                     result_file.write(str(line) + '\n')
                 result_file.close()
+
     return results
 
 def load_and_cache_examples(args, task, tokenizer, dataset_type, evaluate=False):
@@ -756,7 +762,7 @@ def main():
                         help="The comment")
     parser.add_argument("--output_dir", default=None, type=str, required=True,
                         help="The output directory where the model predictions and checkpoints will be written.")
-    parser.add_argument("--restore", type=bool, default=True, help="Whether restore from the last checkpoint, is nochenckpoints, start from scartch")
+    parser.add_argument("--restore", type=bool, default=False, help="Whether restore from the last checkpoint, is nochenckpoints, start from scartch")
 
     parser.add_argument("--freeze_bert", default=True, type=bool,
                         help="freeze the parameters of pretrained model.")
@@ -958,8 +964,9 @@ def main():
     # Training
     if args.do_train:
         train_dataset = load_and_cache_examples(args, args.task_name, tokenizer, 'train', evaluate=False)
-        global_step, tr_loss = train(args, train_dataset, model, tokenizer)
+        global_step, tr_loss, results = train(args, train_dataset, model, tokenizer)
         logger.info(" global_step = %s, average loss = %s", global_step, tr_loss)
+        logger.info(f'results = {results}')
 
     # Saving best-practices: if you use defaults names for the model, you can reload it using from_pretrained()
     if args.do_train and (args.local_rank == -1 or torch.distributed.get_rank() == 0):
@@ -992,13 +999,13 @@ def main():
     #         results.update(result)
     # save_result = str(results)
     # save_results.append(save_result)
-    #
+
     # result_file = open(os.path.join(args.output_dir, args.my_model_name + '_result.txt'), 'w')
     # for line in save_results:
     #     result_file.write(str(line) + '\n')
     # result_file.close()
 
-    # return results
+    return results
 
 if __name__ == "__main__":
     main()

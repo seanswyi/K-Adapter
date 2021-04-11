@@ -3,3 +3,6 @@
 /pretrained_models
 /proc_data
 /pytorch_transformers/__pycache__
+__pycache__/
+runs/
+data/
