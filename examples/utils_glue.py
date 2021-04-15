@@ -20,19 +20,49 @@
 
 from __future__ import absolute_import, division, print_function
 
+from collections import Counter
 import csv
+from io import open
+from itertools import permutations
+import json
 import logging
 import os
-import sys
-from io import open
-import json
-from collections import Counter
 
+import numpy as np
 from scipy.stats import pearsonr, spearmanr
 from sklearn.metrics import matthews_corrcoef, f1_score
-import numpy as np
+from tqdm import tqdm
+
 
 logger = logging.getLogger(__name__)
+
+
+ENTITY_MARKER = '[ENTITY]'
+
+
+with open(file='/hdd1/seokwon/data/DocRED/rel_info.json') as f:
+    docred_id2rel = json.load(fp=f)
+
+
+with open(file='/hdd1/seokwon/data/DocRED/DocRED_baseline_metadata/rel2id.json') as f:
+    docred_rel2id = json.load(fp=f)
+
+
+def adjust_mention_positions(entities, text):
+    for entity_idx, entity in enumerate(entities):
+        entity = sorted(entity, key=lambda x: x['sent_id'])
+        for mention_idx, mention in enumerate(entity):
+            sent_id = mention['sent_id']
+
+            # No need to adjust span for first sentence.
+            if sent_id == 0:
+                continue
+
+            prev_sent_lengths = sum([len(x) for x in text[:sent_id]])
+            adjusted_positions = [i + prev_sent_lengths for i in mention['pos']]
+            entity[mention_idx]['pos'] = adjusted_positions
+
+    return entities
 
 
 class InputExample(object):
@@ -56,6 +86,15 @@ class InputExample(object):
         self.label = label
 
 
+class DocREDInputExample():
+    def __init__(self, id_, text, entity_pos, head_tail_idxs, labels):
+        self.id = id_
+        self.text = text
+        self.entity_pos = entity_pos
+        self.head_tail_idxs = head_tail_idxs
+        self.labels = labels
+
+
 class InputFeatures(object):
     """A single set of features of data."""
 
@@ -65,6 +104,15 @@ class InputFeatures(object):
         self.segment_ids = segment_ids
         self.label_id = label_id
         self.start_id = start_id
+
+
+class DocREDInputFeature():
+    def __init__(self, word_ids, word_attention_mask, entity_position_ids, labels, head_tail_idxs):
+        self.word_ids = word_ids
+        self.word_attention_mask = word_attention_mask
+        self.entity_position_ids = entity_position_ids
+        self.labels = labels
+        self.head_tail_idxs = head_tail_idxs
 
 
 class tacredInputFeatures(object):
@@ -205,23 +253,133 @@ class TACREDProcessor(DataProcessor):
         """Creates examples for the training and dev sets."""
         examples = []
         no_relation_number = negative_sample
-        for (i, line) in enumerate(lines):
+
+        pbar = tqdm(iterable=lines, desc=f"Processing for {dataset_type}", total=len(lines))
+        for i, line in enumerate(pbar):
             guid = i
             # text_a: tokenized words
             text_a = line['token']
             # text_b: other information
             text_b = (line['subj_start'], line['subj_end'], line['obj_start'], line['obj_end'])
             label = line['relation']
-            if label == 'no_relation' and dataset_type == 'train':
-                no_relation_number -= 1
-                if no_relation_number > 0:
-                    examples.append(
-                        InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
+
+            example = InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label)
+            examples.append(example)
+
+            # if label == 'no_relation' and dataset_type == 'train':
+            #     no_relation_number -= 1
+            #     if no_relation_number > 0:
+            #         examples.append(
+            #             InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
+            #     else:
+            #         continue
+            # else:
+            #     examples.append(
+            #         InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
+
+        return examples
+
+
+class DocREDProcessor(DataProcessor):
+    def get_train_examples(self, data_dir, max_seq_length):
+        """See base class."""
+        train_filename = os.path.join(data_dir, 'train_annotated.json')
+        with open(file=train_filename) as f:
+            train_data = json.load(fp=f)
+
+        return self._create_examples(train_data, dataset_type='train', max_seq_length=max_seq_length)
+
+    def get_dev_examples(self, data_dir, max_seq_length):
+        """See base class."""
+        dev_filename = os.path.join(data_dir, 'dev.json')
+        with open(file=dev_filename) as f:
+            dev_data = json.load(fp=f)
+
+        return self._create_examples(dev_data, dataset_type='dev', max_seq_length=max_seq_length)
+
+    def get_labels(self, data_dir='/hdd1/seokwon/data/DocRED/original', examples=None, max_seq_length=None):
+        if examples == None:
+            examples = self.get_dev_examples(data_dir, max_seq_length=max_seq_length)
+
+        labels = set()
+
+        for example in examples:
+            labels_ = example.labels
+
+            for label in labels_:
+                for idx, element in enumerate(label):
+                    if element != 0:
+                        labels.add(idx)
+
+        return sorted(labels)
+
+        # """See base class."""
+        # # return ["0", "1"]
+        # return relations
+
+    def _create_examples(self, lines, dataset_type, max_seq_length):
+        """Creates examples for the training and dev sets."""
+        examples = []
+
+        pbar = tqdm(iterable=lines, desc=f"Processing DocRED {dataset_type}", total=len(lines))
+        for i, item in enumerate(pbar):
+            sentences = item['sents']
+            triplets = item['labels']
+            entities = adjust_mention_positions(entities=item['vertexSet'], text=sentences)
+
+            entity_pos = []
+            for entity in entities:
+                mention_positions = []
+                for mention in entity:
+                    mention_positions.append(mention['pos'])
+
+                entity_pos.append(mention_positions)
+
+            head_tail_pair2relation = {}
+            for triplet in triplets:
+                relation = int(docred_rel2id[triplet['r']])
+                head_idx = triplet['h']
+                tail_idx = triplet['t']
+                head_tail_pair = (head_idx, tail_idx)
+
+                if head_tail_pair in head_tail_pair2relation:
+                    head_tail_pair2relation[head_tail_pair].append(relation)
                 else:
-                    continue
-            else:
-                examples.append(
-                    InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
+                    head_tail_pair2relation[head_tail_pair] = [relation]
+
+            whole_text = ' '.join([' '.join(sentence) for sentence in sentences]).split()
+            entity_idxs = list(range(len(entities)))
+            all_entity_pairs = list(permutations(iterable=entity_idxs, r=2))
+
+            positive_pairs = list(head_tail_pair2relation.keys())
+            negative_pairs = [pair for pair in all_entity_pairs if pair not in positive_pairs]
+
+            relations = []
+            head_tail_pairs = []
+            for head_tail_pair in head_tail_pair2relation:
+                relation = [0] * len(docred_rel2id)
+
+                for sample in head_tail_pair2relation[head_tail_pair]:
+                    relation[sample] = 1
+
+                relations.append(relation)
+                head_tail_pairs.append(head_tail_pair)
+
+            for head_idx, _ in enumerate(entities):
+                for tail_idx, _ in enumerate(entities):
+                    head_tail_pair = (head_idx, tail_idx)
+
+                    if (head_idx != tail_idx) and (head_tail_pair not in head_tail_pairs):
+                        relation = [1] + ([0] * (len(docred_rel2id) - 1))
+                        relations.append(relation)
+                        head_tail_pairs.append(head_tail_pair)
+
+            example = DocREDInputExample(f'{dataset_type}-{i}',
+                                         ' '.join(whole_text),
+                                         entity_pos,
+                                         head_tail_pairs,
+                                         relations)
+            examples.append(example)
 
         return examples
 
@@ -281,90 +439,6 @@ class SemEvalProcessor(DataProcessor):
         return examples
 
 
-def convert_examples_to_features_entity_typing(examples, label_list, max_seq_length,
-                                               tokenizer, output_mode,
-                                               cls_token_at_end=False,
-                                               cls_token='[CLS]',
-                                               cls_token_segment_id=1,
-                                               sep_token='[SEP]',
-                                               sep_token_extra=False,
-                                               pad_on_left=False,
-                                               pad_token=0,
-                                               pad_token_segment_id=0,
-                                               sequence_a_segment_id=0,
-                                               sequence_b_segment_id=1,
-                                               mask_padding_with_zero=True):
-    """ Loads a data file into a list of `InputBatch`s
-        `cls_token_at_end` define the location of the CLS token:
-            - False (Default, BERT/XLM pattern): [CLS] + A + [SEP] + B + [SEP]
-            - True (XLNet/GPT pattern): A + [SEP] + B + [SEP] + [CLS]
-        `cls_token_segment_id` define the segment id associated to the CLS token (0 for BERT, 2 for XLNet)
-    """
-
-    label_map = {label: i for i, label in enumerate(label_list)}
-    features = []
-    for (ex_index, example) in enumerate(examples):
-        if ex_index % 10000 == 0:
-            logger.info("Writing example %d of %d" % (ex_index, len(examples)))
-
-        start, end = example.text_b[0], example.text_b[1]
-        sentence = example.text_a
-        tokens_0_start = tokenizer.tokenize(sentence[:start])
-        tokens_start_end = tokenizer.tokenize(sentence[start:end])
-        tokens_end_last = tokenizer.tokenize(sentence[end:])
-        tokens = [cls_token] + tokens_0_start + tokenizer.tokenize('@') + tokens_start_end + tokenizer.tokenize(
-            '@') + tokens_end_last + [sep_token]
-        start = 1 + len(tokens_0_start)
-        end = 1 + len(tokens_0_start) + 1 + len(tokens_start_end)
-
-        segment_ids = [sequence_a_segment_id] * len(tokens)
-        input_ids = tokenizer.convert_tokens_to_ids(tokens)
-
-        # The mask has 1 for real tokens and 0 for padding tokens. Only real
-        # tokens are attended to.
-        input_mask = [1 if mask_padding_with_zero else 0] * len(input_ids)
-
-        # Zero-pad up to the sequence length.
-        padding_length = max_seq_length - len(input_ids)
-        if pad_on_left:
-            input_ids = ([pad_token] * padding_length) + input_ids
-            input_mask = ([0 if mask_padding_with_zero else 1] * padding_length) + input_mask
-            segment_ids = ([pad_token_segment_id] * padding_length) + segment_ids
-        else:
-            input_ids = input_ids + ([pad_token] * padding_length)
-            input_mask = input_mask + ([0 if mask_padding_with_zero else 1] * padding_length)
-            segment_ids = segment_ids + ([pad_token_segment_id] * padding_length)
-        assert len(input_ids) == max_seq_length
-        assert len(input_mask) == max_seq_length
-        assert len(segment_ids) == max_seq_length
-
-        if output_mode == "classification":
-            label_id = example.label
-        elif output_mode == "regression":
-            label_id = float(example.label)
-        else:
-            raise KeyError(output_mode)
-
-        if ex_index < 5:
-            logger.info("*** Example ***")
-            logger.info("guid: %s" % (example.guid))
-            logger.info("tokens: %s" % " ".join(
-                [str(x) for x in tokens]))
-            logger.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
-            logger.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
-            logger.info("segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
-            logger.info("label: {}".format(label_id))
-        start_id = np.zeros(max_seq_length)
-        start_id[start] = 1
-        features.append(
-            InputFeatures(input_ids=input_ids,
-                          input_mask=input_mask,
-                          segment_ids=segment_ids,
-                          label_id=label_id,
-                          start_id=start_id))
-    return features
-
-
 def convert_examples_to_features_tacred(examples, label_list, max_seq_length,
                                         tokenizer, output_mode,
                                         cls_token_at_end=False,
@@ -388,13 +462,12 @@ def convert_examples_to_features_tacred(examples, label_list, max_seq_length,
     label_map = {label: i for i, label in enumerate(label_list)}
 
     features = []
-    for (ex_index, example) in enumerate(examples):
-        if ex_index % 10000 == 0:
-            logger.info("Writing example %d of %d" % (ex_index, len(examples)))
-
+    pbar = tqdm(iterable=examples, desc="Creating examples for TACRED", total=len(examples))
+    for ex_index, example in enumerate(pbar):
         text_a = example.text_a
         subj_start, subj_end, obj_start, obj_end = example.text_b
         relation = example.label
+
         if subj_start < obj_start:
             tokens = tokenizer.tokenize(' '.join(text_a[:subj_start]))
             subj_special_start = len(tokens)
@@ -442,6 +515,7 @@ def convert_examples_to_features_tacred(examples, label_list, max_seq_length,
             input_ids = input_ids + ([pad_token] * padding_length)
             input_mask = input_mask + ([0 if mask_padding_with_zero else 1] * padding_length)
             segment_ids = segment_ids + ([pad_token_segment_id] * padding_length)
+
         assert len(input_ids) == max_seq_length
         assert len(input_mask) == max_seq_length
         assert len(segment_ids) == max_seq_length
@@ -456,8 +530,7 @@ def convert_examples_to_features_tacred(examples, label_list, max_seq_length,
         if ex_index < 5:
             logger.info("*** Example ***")
             logger.info("guid: %s" % (example.guid))
-            logger.info("tokens: %s" % " ".join(
-                [str(x) for x in tokens]))
+            logger.info("tokens: %s" % " ".join([str(x) for x in tokens]))
             logger.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
             logger.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
             logger.info("segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
@@ -465,9 +538,11 @@ def convert_examples_to_features_tacred(examples, label_list, max_seq_length,
 
         if subj_special_start > max_seq_length:
             subj_special_start = max_seq_length - 10
+
         if obj_special_start > max_seq_length:
             obj_special_start = max_seq_length - 10
 
+        # Subj and obj start special token positions.
         subj_special_start_id = np.zeros(max_seq_length)
         obj_special_start_id = np.zeros(max_seq_length)
         subj_special_start_id[subj_special_start] = 1
@@ -480,6 +555,168 @@ def convert_examples_to_features_tacred(examples, label_list, max_seq_length,
                                 label_id=label_id,
                                 subj_special_start_id=subj_special_start_id,
                                 obj_special_start_id=obj_special_start_id))
+    return features
+
+
+def convert_examples_to_features_docred(examples, label_list, tokenizer, max_seq_length):
+    label_map = {label: idx for idx, label in enumerate(label_list)}
+
+    features = []
+    pbar = tqdm(iterable=examples, desc="Creating features for DocRED", total=len(examples))
+    for idx, example in enumerate(pbar):
+        text = example.text
+        entity_positions = example.entity_pos
+        labels = example.labels
+        head_tail_idxs = example.head_tail_idxs
+
+        for idx, entity in enumerate(entity_positions):
+            entity = sorted(entity, key=lambda x: x[0])
+            entity_positions[idx] = entity
+
+        words = text.split()
+        text_ = ''
+        current_idx = 0
+        char_lvl_spans = []
+        for entity in entity_positions:
+            text_ = ''
+            current_idx = 0
+            mention_char_spans = []
+
+            for mention_span in entity:
+                text_ += ' '.join(words[current_idx:mention_span[0]])
+
+                if text_:
+                    text_ += ' '
+
+                start = len(text_)
+                text_ += ' '.join(words[mention_span[0]:mention_span[1]]) + ' '
+
+                end = len(text_)
+                current_idx = mention_span[1]
+
+                mention_char_spans.append([start, end])
+
+            char_lvl_spans.append(mention_char_spans)
+
+        text_sliced_entities = []
+        all_spans = sorted(sum(char_lvl_spans, []), key=lambda x: x[0])
+        current_idx = 0
+        for span in all_spans:
+            start = span[0]
+            end = span[1]
+
+            text_slice = text[current_idx:start]
+            text_sliced_entities.append(text_slice)
+            text_sliced_entities.append(text[start:end])
+            current_idx = end
+
+        text_sliced_entities.append(text[current_idx:])
+        for idx, text_slice in enumerate(text_sliced_entities):
+            text_sliced_entities[idx] = text_slice.strip()
+
+        entity_marked_text = (' ' + ENTITY_MARKER + ' ').join(text_sliced_entities)
+        entity_marked_text = ' '.join(entity_marked_text.split())
+
+        for idx, entity in enumerate(char_lvl_spans):
+            marked_mentions = []
+            for mention in entity:
+                entity_id_marked = (idx, mention)
+                marked_mentions.append(entity_id_marked)
+
+            char_lvl_spans[idx] = marked_mentions
+
+        all_spans = sorted(sum(char_lvl_spans, []), key=lambda x: x[1][0])
+        current_idx = 0
+        adjustment_length = (len(ENTITY_MARKER) * 2) + 2
+        for idx, id_span in enumerate(all_spans):
+            entity_id = id_span[0]
+            span = id_span[1]
+
+            original_start = span[0]
+            original_end = span[1]
+
+            new_start = original_start + (adjustment_length * current_idx)
+            new_end = original_end + (adjustment_length * (current_idx + 1))
+            new_span = [new_start, new_end]
+
+            new_pair = (entity_id, new_span)
+            all_spans[idx] = new_pair
+
+            current_idx += 1
+
+        tokens = []
+        current_idx = 0
+        token_lvl_spans = []
+        for idx, id_span in enumerate(all_spans):
+            entity_id = id_span[0]
+            span = id_span[1]
+
+            start = span[0]
+            end = span[1]
+
+            text_chunk = entity_marked_text[current_idx:start]
+            tokens += tokenizer.tokenize(text_chunk)
+
+            token_start = len(tokens)
+
+            entity_text_chunk = entity_marked_text[start:end]
+            tokens += tokenizer.tokenize(entity_text_chunk)
+
+            token_end = len(tokens)
+
+            token_lvl_id_span = (entity_id, [token_start, token_end])
+            token_lvl_spans.append(token_lvl_id_span)
+
+            current_idx = end
+
+        tokens += tokenizer.tokenize(entity_marked_text[current_idx:])
+        tokens = tokens[:max_seq_length - 2]
+        tokens = [tokenizer.cls_token] + tokens + [tokenizer.sep_token]
+
+        word_ids = tokenizer.convert_tokens_to_ids(tokens)
+        word_ids = word_ids[:max_seq_length]
+
+        word_attention_mask = [1] * len(tokens)
+        word_attention_mask = word_attention_mask[:max_seq_length]
+
+        num_entities = len(entity_positions)
+        entity_position_ids = {idx: [] for idx in range(num_entities)}
+        for id_span in token_lvl_spans:
+            entity_id = id_span[0]
+            span = id_span[1]
+            entity_position_ids[entity_id].append(span)
+
+        entity_position_ids = list(entity_position_ids.values())
+
+        # Since we're capping out max_seq_length to 512, we need to ensure entity positions are within that boundary.
+        len_capped_entity_ids = []
+        for entity in entity_position_ids:
+            entities = []
+            for mention in entity:
+                if mention[0] < max_seq_length:
+                    entities.append(mention)
+            len_capped_entity_ids.append(entities)
+
+        no_entity_idxs = [idx for idx, entity in enumerate(len_capped_entity_ids) if entity == []]
+        len_capped_head_tail_idxs = []
+        new_labels = []
+        for label, pair in zip(labels, head_tail_idxs):
+            if not any(set(pair).intersection(set(no_entity_idxs))):
+                len_capped_head_tail_idxs.append(pair)
+                new_labels.append(label)
+
+        len_capped_entity_ids = [x for x in len_capped_entity_ids if x != []]
+        ###########################################################################################
+
+        assert len(len_capped_head_tail_idxs) == len(new_labels), "Number of (head, tail) pairs and labels don't match."
+
+        feature = DocREDInputFeature(word_ids=word_ids,
+                                     word_attention_mask=word_attention_mask,
+                                     entity_position_ids=len_capped_entity_ids,
+                                     labels=new_labels,
+                                     head_tail_idxs=len_capped_head_tail_idxs)
+        features.append(feature)
+
     return features
 
 
@@ -588,6 +825,7 @@ def _truncate_seq_pair(tokens_a, tokens_b, max_length):
         total_length = len(tokens_a) + len(tokens_b)
         if total_length <= max_length:
             break
+
         if len(tokens_a) > len(tokens_b):
             tokens_a.pop()
         else:
@@ -640,6 +878,48 @@ def micro_f1_tacred(preds, labels):
     print("   Recall (micro): {:.3%}".format(recall_micro))
     print("       F1 (micro): {:.3%}".format(f1_micro))
     return prec_micro, recall_micro, f1_micro
+
+
+def micro_f1_docred(preds, labels):
+    correct_by_relation = Counter()
+    guessed_by_relation = Counter()
+    gold_by_relation = Counter()
+
+    NO_RELATION = 0
+    for guess, gold in zip(preds, labels):
+        if gold == NO_RELATION and guess == NO_RELATION:
+            pass
+        elif gold == NO_RELATION and guess != NO_RELATION:
+            guessed_by_relation[guess] += 1
+        elif gold != NO_RELATION and guess == NO_RELATION:
+            gold_by_relation[gold] += 1
+        elif gold != NO_RELATION and guess != NO_RELATION:
+            guessed_by_relation[guess] += 1
+            gold_by_relation[gold] += 1
+            if gold == guess:
+                correct_by_relation[guess] += 1
+
+    prec_micro = 1.0
+    if sum(guessed_by_relation.values()) > 0:
+        prec_micro = float(sum(correct_by_relation.values())) / float(sum(guessed_by_relation.values()))
+
+    recall_micro = 0.0
+    if sum(gold_by_relation.values()) > 0:
+        recall_micro = float(sum(correct_by_relation.values())) / float(sum(gold_by_relation.values()))
+
+    f1_micro = 0.0
+    if prec_micro + recall_micro > 0.0:
+        f1_micro = 2.0 * prec_micro * recall_micro / (prec_micro + recall_micro)
+
+    print("Precision (micro): {:.3%}".format(prec_micro))
+    print("   Recall (micro): {:.3%}".format(recall_micro))
+    print("       F1 (micro): {:.3%}".format(f1_micro))
+
+    results = {'precision': prec_micro,
+               'recall': recall_micro,
+               'f1': f1_micro}
+
+    return results
 
 
 def micro_f1(preds, labels):
@@ -765,10 +1045,13 @@ def pearson_and_spearman(preds, labels):
 
 def compute_metrics(task_name, preds, labels):
     assert len(preds) == len(labels)
+
     if task_name == 'entity_type':
         return entity_typing_accuracy(preds, labels)
     elif task_name == 'tacred':
         return micro_f1_tacred(preds, labels)
+    elif task_name == 'docred':
+        return micro_f1_docred(preds, labels)
     elif task_name == 'semeval':
         return macro_f1_semeval(preds, labels)
     else:
@@ -779,16 +1062,19 @@ processors = {
     "entity_type": EntityTypeProcessor,
     "tacred": TACREDProcessor,
     "semeval": SemEvalProcessor,
+    'docred': DocREDProcessor
 }
 
 output_modes = {
     "entity_type": "classification",
     "tacred": "classification",
     "semeval": "classification",
+    'docred': 'classification'
 }
 
 GLUE_TASKS_NUM_LABELS = {
     "entity_type": 9,
     "tacred": 42,
     "semeval": 19,
+    'docred': 97
 }

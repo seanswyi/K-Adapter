@@ -60,11 +60,11 @@ ROBERTA_START_DOCSTRING = r"""    The RoBERTa model was proposed in
     `RoBERTa: A Robustly Optimized BERT Pretraining Approach`_
     by Yinhan Liu, Myle Ott, Naman Goyal, Jingfei Du, Mandar Joshi, Danqi Chen, Omer Levy, Mike Lewis, Luke Zettlemoyer,
     Veselin Stoyanov. It is based on Google's BERT model released in 2018.
-    
+
     It builds on BERT and modifies key hyperparameters, removing the next-sentence pretraining
     objective and training with much larger mini-batches and learning rates.
-    
-    This implementation is the same as BertModel with a tiny embeddings tweak as well as a setup for Roberta pretrained 
+
+    This implementation is the same as BertModel with a tiny embeddings tweak as well as a setup for Roberta pretrained
     models.
 
     This model is a PyTorch `torch.nn.Module`_ sub-class. Use it as a regular PyTorch Module and
@@ -77,7 +77,7 @@ ROBERTA_START_DOCSTRING = r"""    The RoBERTa model was proposed in
         https://pytorch.org/docs/stable/nn.html#module
 
     Parameters:
-        config (:class:`~pytorch_transformers.RobertaConfig`): Model configuration class with all the parameters of the 
+        config (:class:`~pytorch_transformers.RobertaConfig`): Model configuration class with all the parameters of the
             model. Initializing with a config file does not load the weights associated with the model, only the configuration.
             Check out the :meth:`~pytorch_transformers.PreTrainedModel.from_pretrained` method to load the model weights.
 """
@@ -96,7 +96,7 @@ ROBERTA_INPUTS_DOCSTRING = r"""
 
                 ``tokens:         <s> the dog is hairy . </s>``
 
-            Fully encoded sequences or sequence pairs can be obtained using the RobertaTokenizer.encode function with 
+            Fully encoded sequences or sequence pairs can be obtained using the RobertaTokenizer.encode function with
             the ``add_special_tokens`` parameter set to ``True``.
 
             RoBERTa is a model with absolute position embeddings so it's usually advised to pad the inputs on
@@ -170,6 +170,7 @@ class RobertaModel(BertModel):
             logger.warning("A sequence with no special tokens has been passed to the RoBERTa model. "
                            "This model requires special tokens in order to work. "
                            "Please specify add_special_tokens=True in your encoding.")
+
         return super(RobertaModel, self).forward(input_ids,
                                                  attention_mask=attention_mask,
                                                  token_type_ids=token_type_ids,
@@ -270,7 +271,7 @@ class RobertaLMHead(nn.Module):
         return x
 
 
-@add_start_docstrings("""RoBERTa Model transformer with a sequence classification/regression head on top (a linear layer 
+@add_start_docstrings("""RoBERTa Model transformer with a sequence classification/regression head on top (a linear layer
     on top of the pooled output) e.g. for GLUE tasks. """,
     ROBERTA_START_DOCSTRING, ROBERTA_INPUTS_DOCSTRING)
 class RobertaForSequenceClassification(BertPreTrainedModel):
@@ -314,7 +315,7 @@ class RobertaForSequenceClassification(BertPreTrainedModel):
 
         self.roberta = RobertaModel(config)
         self.classifier = RobertaClassificationHead(config)
-    
+
     def forward(self, input_ids, attention_mask=None, token_type_ids=None, position_ids=None, head_mask=None,
                 labels=None):
         outputs = self.roberta(input_ids,
