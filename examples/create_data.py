@@ -41,6 +41,38 @@ def load_and_cache_examples(args, task, tokenizer, dataset_type, evaluate=False)
         labels = [getattr(x, 'labels') for x in batch]
         head_tail_idxs = [getattr(x, 'head_tail_idxs') for x in batch]
 
+        # Pad the entities and mentions so that we can convert them to tensors. ###################
+        max_num_entities = max([len(entity) for entity in entity_position_ids])
+        max_num_mentions = 0
+        for entity in entity_position_ids:
+            for mention in entity:
+                if len(mention) > max_num_mentions:
+                    max_num_mentions = len(mention)
+
+        for entity_idx, entity in enumerate(entity_position_ids):
+            num_entities = len(entity)
+            necessary_entity_padding = max_num_entities - num_entities
+            entity_position_ids[entity_idx].extend([[]] * necessary_entity_padding)
+
+            for mention_idx, mention in enumerate(entity):
+                num_mentions = len(mention)
+                necessary_mention_padding = max_num_mentions - num_mentions
+                entity_position_ids[entity_idx][mention_idx].extend([[-1, -1]] * necessary_mention_padding)
+        ###########################################################################################
+
+        # Pad the head_tail_idxs and labels so we can convert them to tensors. ####################
+        max_num_pairs = max([len(pairs) for pairs in head_tail_idxs])
+        for pair_idx, pair in enumerate(head_tail_idxs):
+            num_pairs = len(pair)
+            necessary_pair_padding = max_num_pairs - num_pairs
+            head_tail_idxs[pair_idx].extend([(-1, -1)] * necessary_pair_padding)
+            labels[pair_idx].extend([[-1] * 97] * necessary_pair_padding)
+        ###########################################################################################
+
+        entity_position_ids = torch.tensor(entity_position_ids)
+        labels = torch.tensor(labels)
+        head_tail_idxs = torch.tensor(head_tail_idxs)
+
         collated_data = {'word_ids': create_padded_sequence('word_ids', tokenizer.pad_token_id),
                          'word_attention_mask': create_padded_sequence('word_attention_mask', 0),
                          'entity_position_ids': entity_position_ids,

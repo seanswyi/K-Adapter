@@ -186,14 +186,13 @@ def train(args, train_dataloader, model, tokenizer):
         for step, batch in enumerate(train_dataloader):
             start = time.time()
 
-            inputs = {'input_ids': batch['word_ids'],
-                      'attention_mask': batch['word_attention_mask'],
-                      'entity_position_ids': batch['entity_position_ids'],
-                      'labels': batch['labels'],
-                      'head_tail_idxs': batch['head_tail_idxs']}
+            inputs = {'input_ids': batch['word_ids'], # [batch_size, seq_length]
+                      'attention_mask': batch['word_attention_mask'], # [batch_size, seq_length]
+                      'entity_position_ids': batch['entity_position_ids'], # [batch_size, num_entities, num_mentions, start_end]
+                      'labels': batch['labels'], # [batch_size, num_head_tail_pairs, num_labels]
+                      'head_tail_idxs': batch['head_tail_idxs']} # [batch_size, num_head_tail_pairs, head_tail]
 
-            inputs['input_ids'] = inputs['input_ids'].to(args.device)
-            inputs['attention_mask'] = inputs['attention_mask'].to(args.device)
+            inputs = {key: value.to(args.device) for key, value in inputs.items()}
 
             if args.restore and (step < start_step):
                 continue
@@ -226,6 +225,8 @@ def train(args, train_dataloader, model, tokenizer):
 
             torch.nn.utils.clip_grad_norm_(pretrained_model.parameters(), args.max_grad_norm)
             torch.nn.utils.clip_grad_norm_(docred_model.parameters(), args.max_grad_norm)
+
+            wandb.log({'loss': loss.item()})
 
             tr_loss += loss.item()
             if (step + 1) % args.gradient_accumulation_steps == 0:
@@ -281,7 +282,7 @@ def train(args, train_dataloader, model, tokenizer):
                 # epoch_iterator.close()
                 break
 
-        wandb.log({'loss': tr_loss})
+        # wandb.log({'loss': tr_loss})
 
         if args.max_steps > 0 and global_step > args.max_steps:
             # train_iterator.close()
@@ -289,6 +290,7 @@ def train(args, train_dataloader, model, tokenizer):
 
         model = (pretrained_model,docred_model)
         results = evaluate(args, model, tokenizer, prefix="")
+
         wandb.log(results)
 
     return global_step, tr_loss / global_step, results
@@ -356,6 +358,7 @@ def evaluate(args, model, tokenizer, prefix=''):
                 index += 1
 
             eval_loss = eval_loss / nb_eval_steps
+            wandb.log({'eval_loss': eval_loss})
 
             if args.task_name == 'entity_type':
                 pass
@@ -367,26 +370,7 @@ def evaluate(args, model, tokenizer, prefix=''):
             out_label_ids = np.argmax(out_label_ids, axis=1)
             results = compute_metrics(eval_task, preds, out_label_ids)
 
-            wandb.log(results)
-
             logger.info('{} result:{}'.format(dataset_type, results))
-
-            results[dataset_type] = results
-            save_result = str(results)
-            save_results.append(save_result)
-
-            if os.path.exists(os.path.join(args.output_dir, args.my_model_name + '_result.txt')):
-                result_file = open(os.path.join(args.output_dir, args.my_model_name + '_result.txt'), 'a')
-                # for line in save_results:
-                result_file.write(str(results) + '\n')
-                result_file.close()
-            else:
-                result_file = open(os.path.join(args.output_dir, args.my_model_name + '_result.txt'), 'w')
-
-                for line in save_results:
-                    result_file.write(str(line) + '\n')
-
-                result_file.close()
 
     return results
 
@@ -644,7 +628,7 @@ def main():
                         help="Epsilon for Adam optimizer.")
     parser.add_argument("--max_grad_norm", default=1.0, type=float,
                         help="Max gradient norm.")
-    parser.add_argument("--num_train_epochs", default=3.0, type=float,
+    parser.add_argument("--num_train_epochs", default=10.0, type=float,
                         help="Total number of training epochs to perform.")
     parser.add_argument("--max_steps", default=-1, type=int,
                         help="If > 0: set total number of training steps to perform. Override num_train_epochs.")
@@ -705,7 +689,7 @@ def main():
 
     args.device = device
 
-    wandb.init(project='K-Adapter', name='DocRED')
+    wandb.init(project='K-Adapter', name='DocRED_bilinear')
 
     # Setup logging
     logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
@@ -726,13 +710,13 @@ def main():
     args.output_mode = output_modes[args.task_name]
     label_list = processor.get_labels(max_seq_length=args.max_seq_length)
     num_labels = len(label_list)
+    args.num_labels = num_labels
 
     # Load pretrained model and tokenizer
     if args.local_rank not in [-1, 0]:
         torch.distributed.barrier()  # Make sure only the first process in distributed training will download model & vocab
 
     args.model_type = args.model_type.lower()
-    config_class, model_class, tokenizer_class = MODEL_CLASSES[args.model_type]
 
     tokenizer = RobertaTokenizer.from_pretrained('roberta-large')
     tokenizer.add_special_tokens(dict(additional_special_tokens=[ENTITY_MARKER]))

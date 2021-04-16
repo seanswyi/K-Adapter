@@ -877,13 +877,15 @@ def micro_f1_tacred(preds, labels):
     print("Precision (micro): {:.3%}".format(prec_micro))
     print("   Recall (micro): {:.3%}".format(recall_micro))
     print("       F1 (micro): {:.3%}".format(f1_micro))
-    return prec_micro, recall_micro, f1_micro
+
+    return {'precision': prec_micro, 'recall': recall_micro, 'f1': f1_micro}
+    # return prec_micro, recall_micro, f1_micro
 
 
 def micro_f1_docred(preds, labels):
-    correct_by_relation = Counter()
-    guessed_by_relation = Counter()
-    gold_by_relation = Counter()
+    correct_by_relation = Counter() # TP
+    guessed_by_relation = Counter() # TP + FP
+    gold_by_relation = Counter() # TP + FN
 
     NO_RELATION = 0
     for guess, gold in zip(preds, labels):

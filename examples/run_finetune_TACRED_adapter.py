@@ -35,6 +35,7 @@ from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
 from torch.utils.data.distributed import DistributedSampler
 # from tensorboardX import SummaryWriter
 from tqdm import tqdm, trange
+import wandb
 
 import sys
 curPath = os.path.abspath(os.path.dirname(__file__))
@@ -215,8 +216,6 @@ def train(args, train_dataset, model, tokenizer):
         for step, batch in enumerate(train_dataloader):
             start = time.time()
 
-            import pdb; pdb.set_trace()
-
             if args.restore and (step < start_step):
                 continue
 
@@ -233,8 +232,6 @@ def train(args, train_dataset, model, tokenizer):
                       'labels': batch[3],
                       'subj_special_start_id': batch[4],
                       'obj_special_start_id': batch[5]}
-
-            import pdb; pdb.set_trace()
 
             # outputs = model(**inputs)
             pretrained_model_outputs = pretrained_model(**inputs)
@@ -264,7 +261,7 @@ def train(args, train_dataset, model, tokenizer):
                 torch.nn.utils.clip_grad_norm_(pretrained_model.parameters(), args.max_grad_norm)
 
                 torch.nn.utils.clip_grad_norm_(tacred_model.parameters(), args.max_grad_norm)
-
+            wandb.log({'loss': loss.item()})
             tr_loss += loss.item()
             if (step + 1) % args.gradient_accumulation_steps == 0:
                 optimizer.step()
@@ -412,6 +409,7 @@ def evaluate(args, model, tokenizer, prefix=""):
                 preds = np.squeeze(preds)
 
             result = compute_metrics(eval_task, preds, out_label_ids)
+            wandb.log(result)
             logger.info('{} result:{}'.format(dataset_type, result))
 
             results[dataset_type] = result
@@ -481,8 +479,6 @@ def load_and_cache_examples(args, task, tokenizer, dataset_type, evaluate=False)
 
     if args.local_rank == 0 and not evaluate:
         torch.distributed.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
-
-    import pdb; pdb.set_trace()
 
     # Convert to Tensors and build dataset
     all_input_ids = torch.tensor([f.input_ids for f in features], dtype=torch.long)
@@ -721,7 +717,6 @@ class TACREDModel(nn.Module):
                 task_features = task_features + lin_adapter_outputs
         elif self.args.fusion_mode == 'concat':
             combine_features = pretrained_model_last_hidden_states
-            import pdb; pdb.set_trace()
             fac_features = self.task_dense_fac(torch.cat([combine_features, fac_adapter_outputs], dim=2))
             lin_features = self.task_dense_lin(torch.cat([combine_features, lin_adapter_outputs], dim=2))
             task_features = self.task_dense(torch.cat([fac_features, lin_features], dim=2))
@@ -906,6 +901,8 @@ def main():
 
     args.adapter_list = args.adapter_list.split(',')
     args.adapter_list = [int(i) for i in args.adapter_list]
+
+    wandb.init(project='K-Adapter', name='TACRED')
 
     name_prefix = 'batch-'+str(args.per_gpu_train_batch_size)+'_'+'lr-'+str(args.learning_rate)+'_'+'warmup-'+str(args.warmup_steps)+'_'+'epoch-'+str(args.num_train_epochs)+'_'+str(args.comment)
     args.my_model_name = args.task_name+'_'+name_prefix

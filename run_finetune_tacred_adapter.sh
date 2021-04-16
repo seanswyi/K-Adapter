@@ -3,7 +3,7 @@
 
 # please use 4 GPU
 task=tacred
-GPU='2'
+GPU='4'
 CUDA_VISIBLE_DEVICES=$GPU python examples/run_finetune_TACRED_adapter.py \
     --model_type roberta \
     --model_name_or_path roberta-large \
@@ -33,5 +33,6 @@ CUDA_VISIBLE_DEVICES=$GPU python examples/run_finetune_TACRED_adapter.py \
     --adapter_list "0,11,22" \
     --adapter_skip_layers 0 \
     --eval_steps 1000 \
+    --logging_steps 100 \
     --meta_fac_adaptermodel="/hdd1/seokwon/K-Adapter/pretrained_models/fac-adapter/pytorch_model.bin" \
     --meta_lin_adaptermodel="/hdd1/seokwon/K-Adapter/pretrained_models/lin-adapter/pytorch_model.bin"

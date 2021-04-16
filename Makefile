@@ -5,7 +5,6 @@ run_docred:
 		--config_name roberta-large \
 		--do_train \
 		--do_eval \
-		--evaluate_during_training \
 		--task_name docred \
 		--data_dir /hdd1/seokwon/data/DocRED/original \
 		--output_dir ./proc_data \
@@ -13,7 +12,7 @@ run_docred:
 		--max_seq_length 512 \
 		--per_gpu_eval_batch_size 4 \
 		--per_gpu_train_batch_size 4 \
-		--learning_rate 1e-5 \
+		--learning_rate 1e-4 \
 		--gradient_accumulation_steps 1 \
 		--max_steps 12000  \
 		--model_name roberta-large \
@@ -28,6 +27,7 @@ run_docred:
 		--adapter_list "0,11,22" \
 		--adapter_skip_layers 0 \
 		--eval_steps 1000 \
+		--logging_steps 100 \
 		--meta_fac_adaptermodel "/hdd1/seokwon/K-Adapter/pretrained_models/fac-adapter/pytorch_model.bin" \
 		--meta_lin_adaptermodel "/hdd1/seokwon/K-Adapter/pretrained_models/lin-adapter/pytorch_model.bin"
 
@@ -61,6 +61,7 @@ run_docred_debug:
 		--adapter_list "0,11,22" \
 		--adapter_skip_layers 0 \
 		--eval_steps 1000 \
+		--logging_steps 100 \
 		--meta_fac_adaptermodel "/hdd1/seokwon/K-Adapter/pretrained_models/fac-adapter/pytorch_model.bin" \
 		--meta_lin_adaptermodel "/hdd1/seokwon/K-Adapter/pretrained_models/lin-adapter/pytorch_model.bin" \
 		--debug
