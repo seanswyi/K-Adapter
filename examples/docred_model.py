@@ -192,7 +192,7 @@ class DocREDModel(nn.Module):
         loss_function = BCEWithLogitsLoss()
         loss = loss_function(logits, labels)
 
-        final_output = (loss,) + outputs
+        final_output = (loss,) + outputs + (labels,)
 
         return final_output
 

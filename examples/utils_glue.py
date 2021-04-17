@@ -644,7 +644,7 @@ def convert_examples_to_features_docred(examples, label_list, tokenizer, max_seq
 
             current_idx += 1
 
-        tokens = []
+        tokens = [tokenizer.cls_token]
         current_idx = 0
         token_lvl_spans = []
         for idx, id_span in enumerate(all_spans):
@@ -670,8 +670,8 @@ def convert_examples_to_features_docred(examples, label_list, tokenizer, max_seq
             current_idx = end
 
         tokens += tokenizer.tokenize(entity_marked_text[current_idx:])
-        tokens = tokens[:max_seq_length - 2]
-        tokens = [tokenizer.cls_token] + tokens + [tokenizer.sep_token]
+        tokens = tokens[:max_seq_length - 1]
+        tokens = tokens + [tokenizer.sep_token]
 
         word_ids = tokenizer.convert_tokens_to_ids(tokens)
         word_ids = word_ids[:max_seq_length]

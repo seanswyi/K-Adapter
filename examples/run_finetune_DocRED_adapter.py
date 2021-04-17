@@ -79,7 +79,7 @@ def train(args, train_dataloader, model, tokenizer):
 
     if args.max_steps > 0:
         t_total = args.max_steps
-        args.num_train_epochs = args.max_steps // (len(train_dataloader) // args.gradient_accumulation_steps) + 1
+        # args.num_train_epochs = args.max_steps // (len(train_dataloader) // args.gradient_accumulation_steps) + 1
     else:
         t_total = len(train_dataloader) // args.gradient_accumulation_steps * args.num_train_epochs
 
@@ -216,10 +216,7 @@ def train(args, train_dataloader, model, tokenizer):
                 loss = loss / args.gradient_accumulation_steps
 
             # epoch_iterator.set_description("loss {}".format(loss))
-            logger.info("Epoch {}/{} - Iter {} / {}, loss = {:.5f}, time used = {:.3f}s".format(epoch, int(args.num_train_epochs),step,
-                                                                                             len(train_dataloader),
-                                                                                             loss.item(),
-                                                                                             time.time() - start))
+            logger.info(f"Epoch {epoch + 1}/{args.num_train_epochs} - Iter {step}/{len(train_dataloader)} | loss = {loss.item():.5f} | time used = {time.time() - start:.3f}")
 
             loss.backward()
 
@@ -251,32 +248,32 @@ def train(args, train_dataloader, model, tokenizer):
                     if not os.path.exists(output_dir):
                         os.makedirs(output_dir)
 
-                    model_to_save = docred_model.module if hasattr(docred_model, 'module') else docred_model  # Take care of distributed/parallel training
-                    model_to_save.save_pretrained(output_dir)
-                    model_to_save = pretrained_model.module if hasattr(pretrained_model, 'module') else pretrained_model  # Take care of distributed/parallel training
-                    model_to_save.save_pretrained(output_dir)
+                    # model_to_save = docred_model.module if hasattr(docred_model, 'module') else docred_model  # Take care of distributed/parallel training
+                    # model_to_save.save_pretrained(output_dir)
+                    # model_to_save = pretrained_model.module if hasattr(pretrained_model, 'module') else pretrained_model  # Take care of distributed/parallel training
+                    # model_to_save.save_pretrained(output_dir)
 
-                    torch.save(args, os.path.join(output_dir, 'training_args.bin'))
-                    logger.info("Saving model checkpoint to %s", output_dir)
-                    torch.save(optimizer.state_dict(), os.path.join(output_dir, 'optimizer.bin'))
-                    torch.save(scheduler.state_dict(), os.path.join(output_dir, 'scheduler.bin'))
-                    torch.save(args, os.path.join(output_dir, 'training_args.bin'))
-                    torch.save(global_step, os.path.join(args.output_dir, 'global_step.bin'))
+                    # torch.save(args, os.path.join(output_dir, 'training_args.bin'))
+                    # logger.info("Saving model checkpoint to %s", output_dir)
+                    # torch.save(optimizer.state_dict(), os.path.join(output_dir, 'optimizer.bin'))
+                    # torch.save(scheduler.state_dict(), os.path.join(output_dir, 'scheduler.bin'))
+                    # torch.save(args, os.path.join(output_dir, 'training_args.bin'))
+                    # torch.save(global_step, os.path.join(args.output_dir, 'global_step.bin'))
 
-                    logger.info("Saving model checkpoint, optimizer, global_step to %s", output_dir)
+                    # logger.info("Saving model checkpoint, optimizer, global_step to %s", output_dir)
 
                 if global_step % args.eval_steps == 0:  # Only evaluate when single GPU otherwise metrics may not average well
                     model = (pretrained_model, docred_model)
                     results = evaluate(args, model, tokenizer)
 
-                if args.save_model_iteration:
-                    if (global_step + 1) % args.save_model_iteration == 0:
-                        output_dir = args.output_dir
+                # if args.save_model_iteration:
+                #     if (global_step + 1) % args.save_model_iteration == 0:
+                #         output_dir = args.output_dir
 
-                        model_to_save = model.module if hasattr(model, 'module') else model  # Take care of distributed/parallel training
-                        model_to_save.save_pretrained(output_dir)
+                #         model_to_save = model.module if hasattr(model, 'module') else model  # Take care of distributed/parallel training
+                #         model_to_save.save_pretrained(output_dir)
 
-                        torch.save(args, os.path.join(output_dir, 'pytorch_model_{}.bin'.format(global_step + 1)))
+                #         torch.save(args, os.path.join(output_dir, 'pytorch_model_{}.bin'.format(global_step + 1)))
 
             if args.max_steps > 0 and global_step > args.max_steps:
                 # epoch_iterator.close()
@@ -348,12 +345,14 @@ def evaluate(args, model, tokenizer, prefix=''):
 
                 nb_eval_steps += 1
 
+                labels = outputs[-1]
+
                 if preds is None:
                     preds = logits.detach().cpu().numpy()
-                    out_label_ids = np.array(sum(inputs['labels'], []))
+                    out_label_ids = labels.detach().cpu().numpy()
                 else:
                     preds = np.append(preds, logits.detach().cpu().numpy(), axis=0)
-                    out_label_ids = np.append(out_label_ids, sum(inputs['labels'], []), axis=0)
+                    out_label_ids = np.append(out_label_ids, labels.detach().cpu().numpy(), axis=0)
 
                 index += 1
 
@@ -628,7 +627,7 @@ def main():
                         help="Epsilon for Adam optimizer.")
     parser.add_argument("--max_grad_norm", default=1.0, type=float,
                         help="Max gradient norm.")
-    parser.add_argument("--num_train_epochs", default=10.0, type=float,
+    parser.add_argument("--num_train_epochs", default=20.0, type=float,
                         help="Total number of training epochs to perform.")
     parser.add_argument("--max_steps", default=-1, type=int,
                         help="If > 0: set total number of training steps to perform. Override num_train_epochs.")

@@ -10,8 +10,8 @@ run_docred:
 		--output_dir ./proc_data \
 		--comment 'combine-adapter-dif-trf' \
 		--max_seq_length 512 \
-		--per_gpu_eval_batch_size 4 \
-		--per_gpu_train_batch_size 4 \
+		--per_gpu_eval_batch_size 2 \
+		--per_gpu_train_batch_size 2 \
 		--learning_rate 1e-4 \
 		--gradient_accumulation_steps 1 \
 		--max_steps 12000  \
