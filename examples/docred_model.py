@@ -15,6 +15,8 @@ class DocREDModel(nn.Module):
         self.args = args
         self.config = pretrained_model_config
 
+        self.loss_function = BCEWithLogitsLoss()
+
         self.block_size = 64
         self.num_labels = 97
 
@@ -102,17 +104,32 @@ class DocREDModel(nn.Module):
 
         return all_subj_outputs, all_obj_outputs
 
+    def get_labels(self, logits, k):
+        threshold_logit = logits[:, 0].unsqueeze(1)
+        output = torch.zeros_like(logits).to(logits)
+        logit_mask = (logits > threshold_logit)
+
+        if k > 0:
+            top_k, _ = torch.topk(input=logits, k=k, dim=1)
+            top_k = top_k[:, -1]
+            logit_mask = (logits >= top_k.unsqueeze(1)) & logit_mask
+
+        output[logit_mask] = 1.0
+        output[:, 0] = (output.sum(1) == 0.0).to(logits)
+
+        return output
+
     def forward(self, pretrained_model_outputs, input_ids, attention_mask=None, entity_position_ids=None, head_tail_idxs=None, labels=None):
         pretrained_model_last_hidden_states = pretrained_model_outputs[0]
 
         if self.fac_adapter is not None:
-            fac_adapter_outputs, _ = self.fac_adapter(pretrained_model_outputs)
+            fac_adapter_outputs, _, _ = self.fac_adapter(pretrained_model_outputs)
 
         if self.et_adapter is not None:
-            et_adapter_outputs, _ = self.et_adapter(pretrained_model_outputs)
+            et_adapter_outputs, _, _ = self.et_adapter(pretrained_model_outputs)
 
         if self.lin_adapter is not None:
-            lin_adapter_outputs, _ = self.lin_adapter(pretrained_model_outputs)
+            lin_adapter_outputs, _, _ = self.lin_adapter(pretrained_model_outputs)
 
         if self.args.fusion_mode == 'add':
             task_features = pretrained_model_last_hidden_states
@@ -178,23 +195,14 @@ class DocREDModel(nn.Module):
         bl = (b1.unsqueeze(3) * b2.unsqueeze(2)).view(-1, self.config.hidden_size * self.block_size)
 
         logits = self.classifier(bl)
+        outputs = (self.get_labels(logits, k=4),)
 
-        # intermediate_output = self.dense(relation_representations)
-        # logits = self.out_proj(self.dropout(intermediate_output))
+        if labels is not None:
+            labels = torch.tensor(sum(labels, [])).to(logits)
+            loss = (self.loss_function(logits, labels),)
+            outputs = loss + outputs
 
-        if labels is None:
-            return logits
-
-        labels = torch.tensor(sum(labels, [])).to(logits)
-
-        outputs = (logits,) + pretrained_model_outputs[2:]
-
-        loss_function = BCEWithLogitsLoss()
-        loss = loss_function(logits, labels)
-
-        final_output = (loss,) + outputs + (labels,)
-
-        return final_output
+        return outputs
 
     def save_pretrained(self, save_directory):
         assert os.path.isdir(save_directory), "Saving path should be a directory where the model and configuration can be saved"

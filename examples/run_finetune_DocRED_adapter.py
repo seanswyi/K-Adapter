@@ -21,6 +21,7 @@
 from __future__ import absolute_import, division, print_function
 
 import argparse
+from collections import Counter
 import logging
 import os
 import random
@@ -34,11 +35,12 @@ sys.path.append(root_path)
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data.distributed import DistributedSampler
+import torch.nn.functional as F
 from tqdm import tqdm
 import wandb
 
 from create_data import load_and_cache_examples
+from docred_evaluation import convert_to_official_format, docred_official_evaluate
 from docred_model import DocREDModel
 from pytorch_transformers import (AdamW,
                                   BertConfig, BertForSequenceClassification, BertTokenizer,
@@ -286,11 +288,9 @@ def train(args, train_dataloader, model, tokenizer):
             break
 
         model = (pretrained_model,docred_model)
-        results = evaluate(args, model, tokenizer, prefix="")
+        normal_scores, ignore_scores = evaluate(args, model, tokenizer, prefix='')
 
-        wandb.log(results)
-
-    return global_step, tr_loss / global_step, results
+    return global_step, tr_loss / global_step, normal_scores, ignore_scores
 
 
 save_results=[]
@@ -305,7 +305,7 @@ def evaluate(args, model, tokenizer, prefix=''):
     results = {}
     for dataset_type in ['dev']:
         for eval_task, eval_output_dir in zip(eval_task_names, eval_outputs_dirs):
-            eval_dataloader = load_and_cache_examples(args, eval_task, tokenizer, dataset_type, evaluate=True)
+            eval_features, eval_dataloader = load_and_cache_examples(args, eval_task, tokenizer, dataset_type, evaluate=True)
 
             if not os.path.exists(eval_output_dir) and args.local_rank in [-1, 0]:
                 os.makedirs(eval_output_dir)
@@ -318,8 +318,9 @@ def evaluate(args, model, tokenizer, prefix=''):
             nb_eval_steps = 0
             preds = None
             out_label_ids = None
-            eval_acc = 0
             index = 0
+
+            all_predictions = []
 
             for batch in tqdm(eval_dataloader, desc="Evaluating"):
                 pretrained_model.eval()
@@ -339,60 +340,178 @@ def evaluate(args, model, tokenizer, prefix=''):
                     pretrained_model_outputs = pretrained_model(**inputs)
                     outputs = docred_model(pretrained_model_outputs,**inputs)
 
-                    tmp_eval_loss, logits = outputs[:2]
+                    tmp_eval_loss, predictions = outputs
 
                     eval_loss += tmp_eval_loss.mean().item()
+                    all_predictions.append(predictions)
 
                 nb_eval_steps += 1
-
-                labels = outputs[-1]
-
-                if preds is None:
-                    preds = logits.detach().cpu().numpy()
-                    out_label_ids = labels.detach().cpu().numpy()
-                else:
-                    preds = np.append(preds, logits.detach().cpu().numpy(), axis=0)
-                    out_label_ids = np.append(out_label_ids, labels.detach().cpu().numpy(), axis=0)
 
                 index += 1
 
             eval_loss = eval_loss / nb_eval_steps
             wandb.log({'eval_loss': eval_loss})
 
-            if args.task_name == 'entity_type':
-                pass
-            elif args.output_mode == "classification":
-                preds = np.argmax(preds, axis=1)
-            elif args.output_mode == "regression":
-                preds = np.squeeze(preds)
+            all_predictions = torch.cat(all_predictions, dim=0)
+            all_submissions = convert_to_official_format(all_predictions, eval_features)
 
-            out_label_ids = np.argmax(out_label_ids, axis=1)
-            results = compute_metrics(eval_task, preds, out_label_ids)
+            prediction_counts = np.nonzero(all_predictions.detach().cpu().numpy())[1]
+            print(f"Model predictions: {Counter(prediction_counts)}")
+
+            if len(all_submissions) > 0:
+                normal_scores, ignore_scores = docred_official_evaluate(all_submissions, args.data_dir)
+            else:
+                normal_scores = {'precision': 0.0,
+                                'recall': 0.0,
+                                'f1': 0.0}
+                ignore_scores = {'ign_precision': 0.0,
+                                'ign_recall': 0.0,
+                                'ign_f1': 0.0}
+
+            wandb.log(normal_scores)
+            wandb.log(ignore_scores)
 
             logger.info('{} result:{}'.format(dataset_type, results))
 
-    return results
+    return normal_scores, ignore_scores
 
 
 class PretrainedModel(nn.Module):
     def __init__(self, args):
         super(PretrainedModel, self).__init__()
-        self.model = RobertaModel.from_pretrained('roberta-large', output_hidden_states=True)
+        self.args = args
+
+        self.model = RobertaModel.from_pretrained('roberta-large', output_hidden_states=True, output_attentions=True)
+        self.tokenizer = RobertaTokenizer.from_pretrained('roberta-large')
+
         self.config = self.model.config
         self.config.freeze_adapter = args.freeze_adapter
+
+        self.config.output_attentions = True
 
         if args.freeze_bert:
             for p in self.parameters():
                 p.requires_grad = False
 
-    def forward(self, input_ids, attention_mask=None, token_type_ids=None, position_ids=None, head_mask=None, entity_position_ids=None, head_tail_idxs=None, labels=None):
-        outputs = self.model(input_ids,
-                             attention_mask=attention_mask,
-                             token_type_ids=token_type_ids,
-                             position_ids=position_ids,
-                             head_mask=head_mask)
+    def encode_sequence(self, input_ids, attention_mask, start_tokens, end_tokens):
+        n, c = input_ids.size()
 
-        return outputs  # (loss), logits, (hidden_states), (attentions)
+        start_tokens = torch.tensor(start_tokens).to(input_ids)
+        end_tokens = torch.tensor(end_tokens).to(input_ids)
+
+        len_start = start_tokens.size(0)
+        len_end = end_tokens.size(0)
+
+        if c <= 512:
+            outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
+        else:
+            new_input_ids = []
+            new_hidden_states = []
+            new_attention_mask = []
+            num_seg = []
+
+            seq_len = attention_mask.sum(1).cpu().numpy().astype(np.int32).tolist()
+            for i, l_i in enumerate(seq_len):
+                if l_i <= 512:
+                    new_input_ids.append(input_ids[i, :512])
+                    new_attention_mask.append(attention_mask[i, :512])
+
+                    num_seg.append(1)
+                else:
+                    input_ids1 = torch.cat([input_ids[i, :512 - len_end], end_tokens], dim=-1)
+                    input_ids2 = torch.cat([start_tokens, input_ids[i, (l_i - 512 + len_start): l_i]], dim=-1)
+
+                    attention_mask1 = attention_mask[i, :512]
+                    attention_mask2 = attention_mask[i, (l_i - 512): l_i]
+
+                    new_input_ids.extend([input_ids1, input_ids2])
+                    new_attention_mask.extend([attention_mask1, attention_mask2])
+
+                    num_seg.append(2)
+
+            input_ids = torch.stack(new_input_ids, dim=0)
+            attention_mask = torch.stack(new_attention_mask, dim=0)
+
+            outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
+
+            sequence_output = outputs[0]
+            pooled_output = outputs[1]
+            hidden_states = outputs[2]
+            attention = outputs[-1][-1]
+
+            hidden_states = torch.cat([x.unsqueeze(0) for x in outputs[2]], dim=0)
+
+            current_idx = 0
+            new_sequence_output = []
+            new_attention = []
+            new_hidden_states = []
+            for (n_s, l_i) in zip(num_seg, seq_len):
+                if n_s == 1:
+                    output = F.pad(sequence_output[current_idx], (0, 0, 0, c - 512))
+                    att = F.pad(attention[current_idx], (0, c - 512, 0, c - 512))
+                    hidden_state = F.pad(hidden_states[:, current_idx], (0, 0, 0, c - 512))#.unsqueeze(1)
+
+                    new_sequence_output.append(output)
+                    new_attention.append(att)
+                    new_hidden_states.append(hidden_state)
+                elif n_s == 2:
+                    output1 = sequence_output[current_idx][:512 - len_end]
+                    mask1 = attention_mask[current_idx][:512 - len_end]
+                    att1 = attention[current_idx][:, :512 - len_end, :512 - len_end]
+                    hidden_state1 = hidden_states[:, current_idx][:, :512 - len_end]
+
+                    output1 = F.pad(output1, (0, 0, 0, c - 512 + len_end))
+                    mask1 = F.pad(mask1, (0, c - 512 + len_end))
+                    att1 = F.pad(att1, (0, c - 512 + len_end, 0, c - 512 + len_end))
+                    hidden_state1 = F.pad(hidden_state1, (0, 0, 0, c - 512 + len_end))
+
+                    output2 = sequence_output[current_idx + 1][len_start:]
+                    mask2 = attention_mask[current_idx + 1][len_start:]
+                    att2 = attention[current_idx + 1][:, len_start:, len_start:]
+                    hidden_state2 = hidden_states[:, current_idx + 1][:, len_start:]
+
+                    output2 = F.pad(output2, (0, 0, l_i - 512 + len_start, c - l_i))
+                    mask2 = F.pad(mask2, (l_i - 512 + len_start, c - l_i))
+                    att2 = F.pad(att2, [l_i - 512 + len_start, c - l_i, l_i - 512 + len_start, c - l_i])
+                    hidden_state2 = F.pad(hidden_state2, (0, 0, l_i - 512 + len_start, c - l_i))
+
+                    mask = mask1 + mask2 + 1e-10
+                    output = (output1 + output2) / mask.unsqueeze(-1)
+                    att = att1 + att2
+                    att = att / (att.sum(-1, keepdim=True) + 1e-10)
+                    hidden_state = ((hidden_state1 + hidden_state2) / mask.unsqueeze(-1))#.unsqueeze(1)
+
+                    new_sequence_output.append(output)
+                    new_attention.append(att)
+                    new_hidden_states.append(hidden_state)
+
+                current_idx += n_s
+
+            sequence_output = torch.stack(new_sequence_output, dim=0)
+            attention = torch.stack(new_attention, dim=0)
+
+            hidden_states = torch.stack(new_hidden_states, dim=1)
+            hidden_states = tuple(state for state in hidden_states)
+
+            outputs = (sequence_output, pooled_output, hidden_states, attention)
+
+        return outputs # (encoded_sequence, pooled_output, hidden_states, attention)
+
+    def forward(self, input_ids, attention_mask=None, token_type_ids=None, position_ids=None, head_mask=None, entity_position_ids=None, head_tail_idxs=None, labels=None):
+        start_tokens = [self.tokenizer.cls_token_id]
+        end_tokens = [self.tokenizer.sep_token_id]
+
+        outputs = self.encode_sequence(input_ids, attention_mask, start_tokens, end_tokens)
+
+        # outputs = self.model(input_ids,
+        #                      attention_mask=attention_mask,
+        #                      token_type_ids=token_type_ids,
+        #                      position_ids=position_ids,
+        #                      head_mask=head_mask)
+
+        return outputs
+
+        # return outputs, attention  # (loss), logits, (hidden_states), (attentions)
 
     def save_pretrained(self, save_directory):
         """ Save a model and its configuration file to a directory, so that it
@@ -627,7 +746,7 @@ def main():
                         help="Epsilon for Adam optimizer.")
     parser.add_argument("--max_grad_norm", default=1.0, type=float,
                         help="Max gradient norm.")
-    parser.add_argument("--num_train_epochs", default=20.0, type=float,
+    parser.add_argument("--num_train_epochs", default=40, type=int,
                         help="Total number of training epochs to perform.")
     parser.add_argument("--max_steps", default=-1, type=int,
                         help="If > 0: set total number of training steps to perform. Override num_train_epochs.")
@@ -769,10 +888,11 @@ def main():
 
     # Training
     if args.do_train:
-        train_dataloader = load_and_cache_examples(args, args.task_name, tokenizer, 'train', evaluate=False)
-        global_step, tr_loss, results = train(args, train_dataloader, model, tokenizer)
+        _, train_dataloader = load_and_cache_examples(args, args.task_name, tokenizer, 'train', evaluate=False)
+        global_step, tr_loss, normal_scores, ignore_scores = train(args, train_dataloader, model, tokenizer)
         logger.info(" global_step = %s, average loss = %s", global_step, tr_loss)
-        logger.info(f'results = {results}')
+        logger.info(f"Normal scores: {normal_scores}")
+        logger.info(f"Ignore scores: {ignore_scores}")
 
     # Saving best-practices: if you use defaults names for the model, you can reload it using from_pretrained()
     if args.do_train and (args.local_rank == -1 or torch.distributed.get_rank() == 0):

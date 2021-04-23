@@ -27,6 +27,7 @@ from itertools import permutations
 import json
 import logging
 import os
+import sys
 
 import numpy as np
 from scipy.stats import pearsonr, spearmanr
@@ -107,7 +108,8 @@ class InputFeatures(object):
 
 
 class DocREDInputFeature():
-    def __init__(self, word_ids, word_attention_mask, entity_position_ids, labels, head_tail_idxs):
+    def __init__(self, title, word_ids, word_attention_mask, entity_position_ids, labels, head_tail_idxs):
+        self.title = title
         self.word_ids = word_ids
         self.word_attention_mask = word_attention_mask
         self.entity_position_ids = entity_position_ids
@@ -323,6 +325,7 @@ class DocREDProcessor(DataProcessor):
 
         pbar = tqdm(iterable=lines, desc=f"Processing DocRED {dataset_type}", total=len(lines))
         for i, item in enumerate(pbar):
+            title = item['title']
             sentences = item['sents']
             triplets = item['labels']
             entities = adjust_mention_positions(entities=item['vertexSet'], text=sentences)
@@ -374,7 +377,7 @@ class DocREDProcessor(DataProcessor):
                         relations.append(relation)
                         head_tail_pairs.append(head_tail_pair)
 
-            example = DocREDInputExample(f'{dataset_type}-{i}',
+            example = DocREDInputExample(f'{title}',
                                          ' '.join(whole_text),
                                          entity_pos,
                                          head_tail_pairs,
@@ -564,6 +567,7 @@ def convert_examples_to_features_docred(examples, label_list, tokenizer, max_seq
     features = []
     pbar = tqdm(iterable=examples, desc="Creating features for DocRED", total=len(examples))
     for idx, example in enumerate(pbar):
+        title = example.id
         text = example.text
         entity_positions = example.entity_pos
         labels = example.labels
@@ -670,14 +674,14 @@ def convert_examples_to_features_docred(examples, label_list, tokenizer, max_seq
             current_idx = end
 
         tokens += tokenizer.tokenize(entity_marked_text[current_idx:])
-        tokens = tokens[:max_seq_length - 1]
+        # tokens = tokens[:max_seq_length - 1]
         tokens = tokens + [tokenizer.sep_token]
 
         word_ids = tokenizer.convert_tokens_to_ids(tokens)
-        word_ids = word_ids[:max_seq_length]
+        # word_ids = word_ids[:max_seq_length]
 
         word_attention_mask = [1] * len(tokens)
-        word_attention_mask = word_attention_mask[:max_seq_length]
+        # word_attention_mask = word_attention_mask[:max_seq_length]
 
         num_entities = len(entity_positions)
         entity_position_ids = {idx: [] for idx in range(num_entities)}
@@ -688,33 +692,34 @@ def convert_examples_to_features_docred(examples, label_list, tokenizer, max_seq
 
         entity_position_ids = list(entity_position_ids.values())
 
-        # Since we're capping out max_seq_length to 512, we need to ensure entity positions are within that boundary.
-        len_capped_entity_ids = []
-        for entity in entity_position_ids:
-            entities = []
-            for mention in entity:
-                if mention[0] < max_seq_length:
-                    entities.append(mention)
-            len_capped_entity_ids.append(entities)
+        # # Since we're capping out max_seq_length to 512, we need to ensure entity positions are within that boundary.
+        # len_capped_entity_ids = []
+        # for entity in entity_position_ids:
+        #     entities = []
+        #     for mention in entity:
+        #         if mention[0] < max_seq_length:
+        #             entities.append(mention)
+        #     len_capped_entity_ids.append(entities)
 
-        no_entity_idxs = [idx for idx, entity in enumerate(len_capped_entity_ids) if entity == []]
-        len_capped_head_tail_idxs = []
-        new_labels = []
-        for label, pair in zip(labels, head_tail_idxs):
-            if not any(set(pair).intersection(set(no_entity_idxs))):
-                len_capped_head_tail_idxs.append(pair)
-                new_labels.append(label)
+        # no_entity_idxs = [idx for idx, entity in enumerate(len_capped_entity_ids) if entity == []]
+        # len_capped_head_tail_idxs = []
+        # new_labels = []
+        # for label, pair in zip(labels, head_tail_idxs):
+        #     if not any(set(pair).intersection(set(no_entity_idxs))):
+        #         len_capped_head_tail_idxs.append(pair)
+        #         new_labels.append(label)
 
-        len_capped_entity_ids = [x for x in len_capped_entity_ids if x != []]
-        ###########################################################################################
+        # len_capped_entity_ids = [x for x in len_capped_entity_ids if x != []]
+        # ###########################################################################################
 
-        assert len(len_capped_head_tail_idxs) == len(new_labels), "Number of (head, tail) pairs and labels don't match."
+        # assert len(len_capped_head_tail_idxs) == len(new_labels), "Number of (head, tail) pairs and labels don't match."
 
-        feature = DocREDInputFeature(word_ids=word_ids,
+        feature = DocREDInputFeature(title=title,
+                                     word_ids=word_ids,
                                      word_attention_mask=word_attention_mask,
-                                     entity_position_ids=len_capped_entity_ids,
-                                     labels=new_labels,
-                                     head_tail_idxs=len_capped_head_tail_idxs)
+                                     entity_position_ids=entity_position_ids,
+                                     labels=labels,
+                                     head_tail_idxs=head_tail_idxs)
         features.append(feature)
 
     return features
