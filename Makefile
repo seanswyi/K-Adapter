@@ -12,7 +12,7 @@ run_docred:
 		--max_seq_length 512 \
 		--per_gpu_eval_batch_size 2 \
 		--per_gpu_train_batch_size 2 \
-		--learning_rate 1e-4 \
+		--learning_rate ${lr} \
 		--gradient_accumulation_steps 1 \
 		--max_steps 12000  \
 		--model_name roberta-large \
@@ -30,6 +30,40 @@ run_docred:
 		--logging_steps 100 \
 		--meta_fac_adaptermodel "/hdd1/seokwon/K-Adapter/pretrained_models/fac-adapter/pytorch_model.bin" \
 		--meta_lin_adaptermodel "/hdd1/seokwon/K-Adapter/pretrained_models/lin-adapter/pytorch_model.bin"
+
+run_docred_linear:
+	python ./examples/run_finetune_DocRED_adapter.py \
+		--model_type roberta \
+		--model_name_or_path roberta-large \
+		--config_name roberta-large \
+		--do_train \
+		--do_eval \
+		--task_name docred \
+		--data_dir /hdd1/seokwon/data/DocRED/original \
+		--output_dir ./proc_data \
+		--comment 'combine-adapter-dif-trf' \
+		--max_seq_length 512 \
+		--per_gpu_eval_batch_size 2 \
+		--per_gpu_train_batch_size 2 \
+		--learning_rate ${lr} \
+		--gradient_accumulation_steps 1 \
+		--max_steps 12000  \
+		--model_name roberta-large \
+		--overwrite_output_dir \
+		--overwrite_cache \
+		--warmup_steps 200 \
+		--negative_sample 45000 \
+		--save_steps 500 \
+		--freeze_bert "" \
+		--freeze_adapter "True" \
+		--adapter_size 768 \
+		--adapter_list "0,11,22" \
+		--adapter_skip_layers 0 \
+		--eval_steps 1000 \
+		--logging_steps 100 \
+		--meta_fac_adaptermodel "/hdd1/seokwon/K-Adapter/pretrained_models/fac-adapter/pytorch_model.bin" \
+		--meta_lin_adaptermodel "/hdd1/seokwon/K-Adapter/pretrained_models/lin-adapter/pytorch_model.bin" \
+		--classifier linear
 
 run_docred_debug:
 	python ./examples/run_finetune_DocRED_adapter.py \

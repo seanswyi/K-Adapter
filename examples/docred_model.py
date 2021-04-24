@@ -24,9 +24,12 @@ class DocREDModel(nn.Module):
         self.et_adapter = et_adapter
         self.lin_adapter = lin_adapter
 
-        self.head_extractor = nn.Linear(self.config.hidden_size, self.config.hidden_size)
-        self.tail_extractor = nn.Linear(self.config.hidden_size, self.config.hidden_size)
-        self.classifier = nn.Linear(self.config.hidden_size * self.block_size, self.num_labels)
+        if args.classifier == 'bilinear':
+            self.head_extractor = nn.Linear(self.config.hidden_size, self.config.hidden_size)
+            self.tail_extractor = nn.Linear(self.config.hidden_size, self.config.hidden_size)
+            self.classifier = nn.Linear(self.config.hidden_size * self.block_size, self.num_labels)
+        elif args.classifier == 'linear':
+            self.classifier = nn.Linear(self.config.hidden_size * 2, self.num_labels)
 
         if args.freeze_adapter and (self.fac_adapter is not None):
             for p in self.fac_adapter.parameters():
@@ -148,53 +151,25 @@ class DocREDModel(nn.Module):
             lin_features = self.task_dense_lin(torch.cat([combine_features, lin_adapter_outputs], dim=2))
             task_features = self.task_dense(torch.cat([fac_features, lin_features], dim=2))
 
-        # Need to clean up padding values that were used for tensor conversion. ###################
-        cleaned_head_tail_idxs = []
-        cleaned_labels = []
-        for batch_idx, head_tail_pairs in enumerate(head_tail_idxs):
-            head_tail_idxs_temp = []
-            labels_temp = []
-            for idx, pair in enumerate(head_tail_pairs):
-                if pair.detach().cpu().tolist() != [-1, -1]:
-                    head_tail_idxs_temp.append(head_tail_pairs[idx].detach().cpu().tolist())
-                    labels_temp.append(labels[batch_idx][idx].detach().cpu().tolist())
-
-            cleaned_head_tail_idxs.append(head_tail_idxs_temp)
-            cleaned_labels.append(labels_temp)
-
-        cleaned_entity_positions = []
-        for batch_idx, entities in enumerate(entity_position_ids):
-            entities_temp = []
-            for entity in entities:
-                mentions_temp = []
-                for idx, mention in enumerate(entity):
-                    if mention.detach().cpu().tolist() != [-1, -1]:
-                        mentions_temp.append(mention.detach().cpu().tolist())
-
-                if mentions_temp != []:
-                    entities_temp.append(mentions_temp)
-            if entities_temp != []:
-                cleaned_entity_positions.append(entities_temp)
-
-        head_tail_idxs = cleaned_head_tail_idxs
-        labels = cleaned_labels
-        entity_position_ids = cleaned_entity_positions
-        ###########################################################################################
-
         all_subj_outputs, all_obj_outputs = self.get_head_tail_representations(task_features, entity_position_ids, head_tail_idxs)
 
         subj_outputs = torch.cat(sum(all_subj_outputs, []), dim=0)
         obj_outputs = torch.cat(sum(all_obj_outputs, []), dim=0)
         relation_representations = torch.cat([subj_outputs, obj_outputs], dim=1)
 
-        z_s = torch.tanh(self.head_extractor(subj_outputs))
-        z_o = torch.tanh(self.tail_extractor(obj_outputs))
+        if self.args.classifier == 'bilinear':
+            z_s = torch.tanh(self.head_extractor(subj_outputs))
+            z_o = torch.tanh(self.tail_extractor(obj_outputs))
 
-        b1 = z_s.view(-1, self.config.hidden_size // self.block_size, self.block_size)
-        b2 = z_o.view(-1, self.config.hidden_size // self.block_size, self.block_size)
-        bl = (b1.unsqueeze(3) * b2.unsqueeze(2)).view(-1, self.config.hidden_size * self.block_size)
+            b1 = z_s.view(-1, self.config.hidden_size // self.block_size, self.block_size)
+            b2 = z_o.view(-1, self.config.hidden_size // self.block_size, self.block_size)
+            bl = (b1.unsqueeze(3) * b2.unsqueeze(2)).view(-1, self.config.hidden_size * self.block_size)
 
-        logits = self.classifier(bl)
+            feature_vector = bl
+        elif self.args.classifier == 'linear':
+            feature_vector = relation_representations
+
+        logits = self.classifier(feature_vector)
         outputs = (self.get_labels(logits, k=4),)
 
         if labels is not None:
